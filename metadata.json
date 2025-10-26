@@ -1,0 +1,5 @@
+{
+  "name": "Trợ lý AI Chatbot",
+  "description": "Một ứng dụng chatbot trợ lý AI cơ bản được cung cấp bởi Gemini API. Tham gia vào một cuộc trò chuyện, đặt câu hỏi và nhận câu trả lời ngay lập tức.",
+  "requestFramePermissions": []
+}
