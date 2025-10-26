@@ -1,139 +1,164 @@
-// FIX: The original file content was missing. This content has been generated to create a functional application.
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import { Conversation, Message } from './types';
-import { startChat, sendMessageStream } from './services/geminiService';
-import { v4 as uuidv4 } from 'uuid';
+import { geminiService } from './services/geminiService';
 
-const App: React.FC = () => {
-  const [conversations, setConversations] = useState<Conversation[]>(() => {
-    const savedConvos = localStorage.getItem('conversations');
-    return savedConvos ? JSON.parse(savedConvos) : [];
-  });
+function App() {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isSidebarOpen, setSidebarOpen] = useState(false);
 
-  // Effect to load the first conversation or set to null if none exist
+  // Load conversations from local storage on initial render
   useEffect(() => {
-    if (conversations.length > 0 && !activeConversationId) {
-      setActiveConversationId(conversations[0].id);
-    } else if (conversations.length === 0) {
-      setActiveConversationId(null);
+    try {
+      const storedConversationsRaw = localStorage.getItem('conversations');
+      const storedConversations = storedConversationsRaw ? JSON.parse(storedConversationsRaw) : [];
+      setConversations(storedConversations);
+
+      const storedActiveIdRaw = localStorage.getItem('activeConversationId');
+      if (storedActiveIdRaw) {
+        const activeId = JSON.parse(storedActiveIdRaw);
+        // Ensure the active ID from storage still corresponds to an existing conversation
+        if (storedConversations.some((c: Conversation) => c.id === activeId)) {
+          setActiveConversationId(activeId);
+        }
+      }
+    } catch (error) {
+        console.error("Failed to load data from localStorage", error);
+        localStorage.removeItem('conversations');
+        localStorage.removeItem('activeConversationId');
     }
-  }, [conversations, activeConversationId]);
-  
-  // Effect to save conversations to local storage
+  }, []);
+
+  // Save conversations to local storage whenever they change
   useEffect(() => {
-    localStorage.setItem('conversations', JSON.stringify(conversations));
+    try {
+        localStorage.setItem('conversations', JSON.stringify(conversations));
+    } catch (error) {
+        console.error("Failed to save conversations to localStorage", error);
+    }
   }, [conversations]);
 
-  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  // Save active conversation ID to local storage when it changes
+  useEffect(() => {
+    try {
+        if (activeConversationId) {
+            localStorage.setItem('activeConversationId', JSON.stringify(activeConversationId));
+        } else {
+            localStorage.removeItem('activeConversationId');
+        }
+    } catch(error) {
+        console.error("Failed to save active conversation ID to localStorage", error);
+    }
+  }, [activeConversationId]);
+
+  const activeConversation = useMemo(() => {
+    return conversations.find(c => c.id === activeConversationId) || null;
+  }, [conversations, activeConversationId]);
 
   const handleNewChat = () => {
-    startChat();
     const newConversation: Conversation = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       title: 'New Chat',
       messages: [],
     };
     setConversations(prev => [newConversation, ...prev]);
     setActiveConversationId(newConversation.id);
-    setSidebarOpen(false); // Close sidebar on mobile
+    setSidebarOpen(false);
   };
 
   const handleSelectConversation = (id: string) => {
-    startChat(); // Re-initialize chat session for the selected conversation
     setActiveConversationId(id);
-    setSidebarOpen(false); // Close sidebar on mobile
-  };
-  
-  const handleDeleteConversation = (id: string) => {
-    setConversations(prev => prev.filter(c => c.id !== id));
-    if (activeConversationId === id) {
-        // If the active conversation is deleted, select the next one or none
-        const remainingConversations = conversations.filter(c => c.id !== id);
-        setActiveConversationId(remainingConversations.length > 0 ? remainingConversations[0].id : null);
-    }
+    setSidebarOpen(false);
   };
 
-  const handleSendMessage = async (input: string) => {
-    if (!input.trim()) return;
+  const handleDeleteConversation = (id: string) => {
+    setConversations(prevConversations => {
+      const newConversations = prevConversations.filter(c => c.id !== id);
+      if (activeConversationId === id) {
+        setActiveConversationId(newConversations.length > 0 ? newConversations[0].id : null);
+      }
+      return newConversations;
+    });
+  };
+
+  const handleSendMessage = async (message: string) => {
+    if (!message.trim()) return;
 
     let currentConversationId = activeConversationId;
-    let newConversationCreated = false;
+    let conversationHistory: Message[] = [];
+    let isNewChat = false;
 
-    // If there's no active conversation, create a new one
     if (!currentConversationId) {
-        const newConversation: Conversation = {
-            id: uuidv4(),
-            title: input.length > 30 ? `${input.substring(0, 27)}...` : input,
-            messages: [],
-        };
-        setConversations(prev => [newConversation, ...prev]);
-        setActiveConversationId(newConversation.id);
-        currentConversationId = newConversation.id;
-        newConversationCreated = true;
-        startChat();
+      isNewChat = true;
+      const newConvId = crypto.randomUUID();
+      const newConversation: Conversation = { id: newConvId, title: 'New Chat', messages: [] };
+      setConversations(prev => [newConversation, ...prev]);
+      setActiveConversationId(newConvId);
+      currentConversationId = newConvId;
+    } else {
+      const conv = conversations.find(c => c.id === currentConversationId);
+      if (conv) {
+        conversationHistory = conv.messages;
+        if (conversationHistory.length === 0) {
+          isNewChat = true;
+        }
+      }
     }
-    
-    const userMessage: Message = { id: uuidv4(), sender: 'user', text: input };
-    
-    // Update state immediately with user's message
-    setConversations(prev =>
-      prev.map(c =>
-        c.id === currentConversationId
-          ? { ...c, messages: [...c.messages, userMessage] }
-          : c
-      )
-    );
 
+    const userMessage: Message = { id: crypto.randomUUID(), sender: 'user', text: message };
+
+    setConversations(prev => prev.map(c =>
+      c.id === currentConversationId ? { ...c, messages: [...c.messages, userMessage] } : c
+    ));
     setIsLoading(true);
 
-    const modelMessage: Message = { id: uuidv4(), sender: 'model', text: '' };
-    
-    const conversationForHistory = conversations.find(c => c.id === currentConversationId);
-    const history = newConversationCreated ? [] : conversationForHistory?.messages || [];
-
+    const modelMessage: Message = { id: crypto.randomUUID(), sender: 'model', text: '' };
 
     try {
-        const stream = sendMessageStream(input, history);
-        for await (const chunk of stream) {
-            modelMessage.text += chunk;
-            setConversations(prev =>
-                prev.map(c => {
-                    if (c.id === currentConversationId) {
-                        const otherMessages = c.messages.filter(m => m.id !== modelMessage.id);
-                        return { ...c, messages: [...otherMessages, { ...modelMessage }] };
-                    }
-                    return c;
-                })
-            );
-        }
-    } catch (error) {
-        console.error("Failed to get response stream:", error);
-        modelMessage.text = "Error: Could not get a response from the model.";
+      if (isNewChat) {
+        geminiService.generateTitle(message).then(title => {
+          setConversations(prev => prev.map(c =>
+            c.id === currentConversationId ? { ...c, title } : c
+          ));
+        });
+      }
+
+      for await (const chunk of geminiService.sendMessageStream(message, conversationHistory)) {
+        modelMessage.text += chunk;
         setConversations(prev =>
-            prev.map(c => {
-                if (c.id === currentConversationId) {
-                    const otherMessages = c.messages.filter(m => m.id !== modelMessage.id);
-                    return { ...c, messages: [...otherMessages, modelMessage] };
-                }
-                return c;
-            })
+          prev.map(c => {
+            if (c.id === currentConversationId) {
+              const existingMessages = c.messages;
+              const lastMessage = existingMessages[existingMessages.length - 1];
+              if (lastMessage?.id === modelMessage.id) {
+                return { ...c, messages: [...existingMessages.slice(0, -1), { ...modelMessage }] };
+              } else {
+                return { ...c, messages: [...existingMessages, modelMessage] };
+              }
+            }
+            return c;
+          })
         );
+      }
+    } catch (error) {
+      console.error("Error streaming message:", error);
+      const errorMessage: Message = { id: crypto.randomUUID(), sender: 'model', text: 'An error occurred. Please try again.' };
+      setConversations(prev => prev.map(c =>
+        c.id === currentConversationId ? { ...c, messages: [...c.messages, errorMessage] } : c
+      ));
     } finally {
-        setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden font-sans text-base antialiased bg-gray-50 dark:bg-gray-950">
-       <div 
-        className={`fixed inset-0 bg-black/50 z-10 md:hidden ${sidebarOpen ? 'block' : 'hidden'}`}
+    <div className="flex h-screen w-screen bg-white dark:bg-gray-900 font-sans overflow-hidden">
+      <div
+        className={`fixed inset-0 z-10 bg-black/50 md:hidden ${isSidebarOpen ? 'block' : 'hidden'}`}
         onClick={() => setSidebarOpen(false)}
-        aria-hidden="true"
       ></div>
       <Sidebar
         conversations={conversations}
@@ -141,10 +166,10 @@ const App: React.FC = () => {
         onNewChat={handleNewChat}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
-        isOpen={sidebarOpen}
+        isOpen={isSidebarOpen}
         setIsOpen={setSidebarOpen}
       />
-      <main className="flex-1 flex flex-col h-full">
+      <main className="flex-1 flex flex-col h-full relative">
         <ChatView
           messages={activeConversation?.messages || []}
           onSendMessage={handleSendMessage}
@@ -154,6 +179,6 @@ const App: React.FC = () => {
       </main>
     </div>
   );
-};
+}
 
 export default App;
